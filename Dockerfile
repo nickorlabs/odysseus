@@ -20,6 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional opt-in: SOPS for encrypted-at-rest secrets (see SECURITY.md).
+# Small static Go binary; only invoked when /app/secrets.env.enc is present
+# at container start. Pinned by version; arch-aware via dpkg.
+ARG SOPS_VERSION=3.13.1
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /usr/local/bin/sops \
+       "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.${arch}" \
+    && chmod +x /usr/local/bin/sops
+
 WORKDIR /app
 
 # Install Python deps first (layer cache). Optional extras (PyMuPDF AGPL, etc.)

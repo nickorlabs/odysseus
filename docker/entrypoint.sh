@@ -85,6 +85,39 @@ export PATH="/app/.local/bin:$PATH"
 # || true so a setup failure never prevents the container from starting.
 gosu "$PUID:$PGID" python /app/setup.py || true
 
+# Optional SOPS-encrypted secrets at rest. When /app/secrets.env is
+# present it MUST be SOPS-encrypted (detected via the `sops_version`
+# trailing line). On encrypted, we exec via `sops exec-env` so secrets
+# enter the process as env vars JIT — plaintext never touches the
+# container filesystem. On plaintext, we refuse to start — a plaintext
+# secrets.env in /app is almost always a packaging mistake. See
+# SECURITY.md ("Encrypting Secrets At Rest") for the user-side workflow.
+SECRETS_FILE="/app/secrets.env"
+if [ -f "$SECRETS_FILE" ]; then
+    if ! grep -q '^sops_version' "$SECRETS_FILE"; then
+        echo "entrypoint: $SECRETS_FILE exists but is not SOPS-encrypted; refusing to start" >&2
+        echo "entrypoint: encrypt it with: sops -e -i secrets.env" >&2
+        exit 1
+    fi
+    if ! command -v sops >/dev/null 2>&1; then
+        echo "entrypoint: $SECRETS_FILE is SOPS-encrypted but 'sops' is not on PATH" >&2
+        exit 1
+    fi
+    if [ -z "${SOPS_AGE_KEY_FILE:-}" ] && [ -z "${SOPS_AGE_KEY:-}" ]; then
+        echo "entrypoint: $SECRETS_FILE is SOPS-encrypted but neither SOPS_AGE_KEY_FILE nor SOPS_AGE_KEY is set" >&2
+        exit 1
+    fi
+    # `sops exec-env` takes a single command string (passed to sh -c),
+    # not argv passthrough — so we single-quote each positional arg to
+    # preserve word boundaries when sh re-tokenises.
+    cmd=""
+    for a in "$@"; do
+        qa=$(printf '%s' "$a" | sed "s/'/'\\\\''/g")
+        cmd="$cmd '$qa'"
+    done
+    exec gosu "$PUID:$PGID" sops exec-env "$SECRETS_FILE" "exec$cmd"
+fi
+
 # Drop root and run the actual app. `gosu` is preferred over `su` /
 # `sudo` because it cleans up the process tree (no extra shell layer)
 # so signals (SIGTERM from `docker stop`) reach uvicorn directly.
